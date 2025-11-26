@@ -43,7 +43,7 @@ if pagina == "Simulação / Controlador":
 
     col1, col2, col3, col4 = st.columns(4)
 
-    erro  = col1.slider("Erro (°C)", -5.0, 5.0, 0.0, 0.1)
+    erro  = col1.slider("Erro (°C)", -16.0, 16.0, 0.0, 0.1)
     de    = col2.slider("Delta Erro (°C/min)", -2.0, 2.0, 0.0, 0.1)
     text  = col3.slider("Temperatura Externa (°C)", 10.0, 35.0, 22.0, 0.5)
     qest  = col4.slider("Carga Térmica (%)", 0.0, 100.0, 50.0, 1.0)
@@ -64,10 +64,17 @@ if pagina == "Simulação / Controlador":
     st.write("---")
 
     st.header("📈 Simulação Completa de 24 Horas")
-
+    st.subheader("Parâmetros da Simulação")
+    setpoint_user = st.number_input(
+    "Setpoint de Temperatura (°C)", 
+    min_value=16.0, 
+    max_value=32.0, 
+    value=22.0, # Valor padrão exigido pelo PDF 
+    step=0.5
+    )
     if st.button("Rodar Simulação 24h"):
         with st.spinner("Simulando 24h e publicando via MQTT..."):
-            ts, Ts, Texts, Qests, PCRACs = simular_24h()
+            ts, Ts, Texts, Qests, PCRACs = simular_24h(setpoint_user)
 
         st.success("Simulação concluída!")
 
@@ -104,10 +111,10 @@ if pagina == "Monitor MQTT":
     st.write(f"Broker: **{MQTT_BROKER}** — Porta: **{MQTT_PORT}**")
 
     MQTT_TOPICS = [
-        "datacenter/temperatura",
-        "datacenter/carga_termica",
-        "datacenter/potencia_crac",
-        "datacenter/alertas",
+        "datacenter/fuzzy/temp"
+        "datacenter/fuzzy/control" # Ou criar um tópico específico para controle
+        "datacenter/fuzzy/alert"
+        "datacenter/fuzzy/carga"
     ]
 
     # ------------------------------

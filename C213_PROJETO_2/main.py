@@ -8,6 +8,7 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 import matplotlib.pyplot as plt
 import paho.mqtt.client as mqtt
+import random
 
 # ============================================================
 # 1) MODELO FÍSICO
@@ -21,7 +22,7 @@ def modelo_fisico(T_atual, PCRAC, Qest, Text):
 # 2) UNIVERSOS
 # ============================================================
 
-erro_univ        = np.linspace(-5, 5, 100)
+erro_univ        = np.linspace(-16, 16, 100)
 delta_erro_univ  = np.linspace(-2, 2, 100)
 text_univ        = np.linspace(10, 35, 100)
 qest_univ        = np.linspace(0, 100, 100)
@@ -38,9 +39,9 @@ pcrac_var = ctrl.Consequent(pcrac_univ, 'pcrac')
 # 3) MF’s
 # ============================================================
 
-erro_var['neg']  = fuzz.trimf(erro_univ, [-5, -5, 0])
+erro_var['neg']  = fuzz.trimf(erro_univ, [-16, -16, 0])
 erro_var['zero'] = fuzz.trimf(erro_univ, [-1, 0, 1])
-erro_var['pos']  = fuzz.trimf(erro_univ, [0, 5, 5])
+erro_var['pos']  = fuzz.trimf(erro_univ, [0, 16, 16])
 
 de_var['neg']  = fuzz.trimf(delta_erro_univ, [-2, -2, 0])
 de_var['zero'] = fuzz.trimf(delta_erro_univ, [-0.5, 0, 0.5])
@@ -127,11 +128,10 @@ def carga_termica(t_min):
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT   = 1883
 
-MQTT_TOPIC_TEMP   = "datacenter/temperatura"
-MQTT_TOPIC_CARGA  = "datacenter/carga_termica"
-MQTT_TOPIC_CRAC   = "datacenter/potencia_crac"
-MQTT_TOPIC_ALERTA = "datacenter/alertas"
-
+MQTT_TOPIC_TEMP   = "datacenter/fuzzy/temp"
+MQTT_TOPIC_CRAC   = "datacenter/fuzzy/control" # Ou criar um tópico específico para controle
+MQTT_TOPIC_ALERTA = "datacenter/fuzzy/alert"
+MQTT_TOPIC_CARGA  = "datacenter/fuzzy/carga"
 _mqtt_client = None
 
 def _get_mqtt_client():
@@ -168,9 +168,8 @@ def publicar_mqtt_alerta(msg):
 # 8) SIMULAÇÃO 24H
 # ============================================================
 
-def simular_24h():
+def simular_24h(setpoint=22):
     minutos  = 1440
-    setpoint = 22.0
 
     T = setpoint
     e_anterior = 0
@@ -179,7 +178,8 @@ def simular_24h():
     ts, Ts, Texts, Qests, PCRACs = [], [], [], [], []
 
     for t in range(minutos):
-        Text = temperatura_externa(t)
+        ruido = random.gauss(0, 0.5) 
+        Text = temperatura_externa(t) + ruido
         Qest = carga_termica(t)
 
         e = T - setpoint
@@ -197,8 +197,8 @@ def simular_24h():
         publicar_mqtt_temperatura(T)
         publicar_mqtt_carga(Qest)
         publicar_mqtt_crac(PCRAC)
-        if T > 28:
-            publicar_mqtt_alerta(f"TEMPERATURA ALTA: {T:.2f}°C")
+        if T > 26 or T < 18:
+            publicar_mqtt_alerta(f"ALERTA CRÍTICO: Temp {T:.2f}°C fora da faixa segura!")
 
         T = T_next
         e_anterior = e
