@@ -6,6 +6,7 @@ import paho.mqtt.client as mqtt
 from main import (
     fuzzy_controller,
     simular_24h,
+    criar_graficos_mf,
     publicar_mqtt_temperatura,
     publicar_mqtt_carga,
     publicar_mqtt_crac,
@@ -63,167 +64,179 @@ if pagina == "Simulação / Controlador":
 
     st.write("---")
 
+
+    with st.expander("📊 Visualizar Funções de Pertinência"):
+        st.write("Clique no botão abaixo para ver o ponto de operação atual nos gráficos.")
+    
+        if st.button("Gerar Gráficos com Valores Atuais"):
+        
+        # 1. Primeiro calculamos o Fuzzy com os valores atuais dos sliders
+        # Usamos 50 como valor anterior dummy apenas para plotagem instantânea
+            pcrac_atual_grafico = fuzzy_controller(erro, de, text, qest, 50.0)
+        
+        # 2. Chamamos a função passando TODOS os 5 valores
+            figura = criar_graficos_mf(erro, de, text, qest, pcrac_atual_grafico)
+        
+        # 3. Exibimos
+            st.pyplot(figura)
+        
+            st.info(f"Visualizando para: Erro={erro}, dE={de}, Text={text}, Qest={qest} -> Saída PCRAC={pcrac_atual_grafico:.2f}%")
+
     st.header("📈 Simulação Completa de 24 Horas")
-    st.subheader("Parâmetros da Simulação")
-    setpoint_user = st.number_input(
-    "Setpoint de Temperatura (°C)", 
-    min_value=16.0, 
-    max_value=32.0, 
-    value=22.0, # Valor padrão exigido pelo PDF 
-    step=0.5
-    )
+
+    # Checkbox para ativar o envio lento MQTT
+    usar_mqtt = st.checkbox("Ativar Modo Demo MQTT (Simulação lenta para monitoramento)")
+
     if st.button("Rodar Simulação 24h"):
-        with st.spinner("Simulando 24h e publicando via MQTT..."):
-            ts, Ts, Texts, Qests, PCRACs = simular_24h(setpoint_user)
-
+        with st.spinner("Simulando..."):
+            # Passa o valor do checkbox para a função
+            ts, Ts, Texts, Qests, PCRACs = simular_24h(modo_lento=usar_mqtt) 
+        
         st.success("Simulação concluída!")
+        # ... (código dos gráficos continua igual) ...
 
-        # Gráfico 1: Temperaturas
+        # --- GRÁFICO 1: TEMPERATURAS ---
         fig1, ax1 = plt.subplots(figsize=(10, 4))
-        ax1.plot(ts, Ts,  label="Temperatura Interna (°C)")
-        ax1.plot(ts, Texts, '--', label="Temperatura Externa (°C)")
+        
+        # Linha Azul: Temperatura Interna
+        ax1.plot(ts, Ts, label="Temperatura Interna (°C)", color='blue', linewidth=2)
+        
+        # Linha Laranja: Temperatura Externa
+        ax1.plot(ts, Texts, ':', label="Temp. Externa (°C)", color='orange', linewidth=1)
+
+        # Linhas de referência (Limites)
+        ax1.axhline(y=26, color='red', linestyle='-', linewidth=0.8, alpha=0.5, label="Limites (18-26°C)")
+        ax1.axhline(y=18, color='red', linestyle='-', linewidth=0.8, alpha=0.5)
+
         ax1.set_xlabel("Tempo (h)")
         ax1.set_ylabel("Temperatura (°C)")
-        ax1.grid(True)
-        ax1.legend()
+        ax1.set_title("Histórico de Temperatura (24h) - Setpoint Fixo 22°C")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='upper right')
+        
         st.pyplot(fig1)
 
-        # Gráfico 2: Carga x CRAC
+        # --- GRÁFICO 2: ESFORÇO ---
         fig2, ax2 = plt.subplots(figsize=(10, 4))
-        ax2.plot(ts, Qests,  label="Carga térmica (%)")
-        ax2.plot(ts, PCRACs, '--', label="Potência CRAC (%)")
+        ax2.plot(ts, Qests, label="Carga Térmica (%)", color='orange', linewidth=1.5)
+        ax2.plot(ts, PCRACs, label="Potência CRAC (%)", color='blue', linewidth=1.5, linestyle='--')
+        
         ax2.set_xlabel("Tempo (h)")
         ax2.set_ylabel("Percentual (%)")
-        ax2.grid(True)
+        ax2.set_title("Esforço do Controlador vs Carga")
+        ax2.grid(True, alpha=0.3)
         ax2.legend()
         st.pyplot(fig2)
 
     st.write("---")
     st.write("Desenvolvido por **Kauã Victor Garcia Siecola** ✨")
+    st.write("Desenvolvido por **Daví Padula Rabelo** ✨")
 
 
 # ============================================
-# PÁGINA 2 — MONITOR MQTT (SIMPLIFICADO, SEM THREAD)
+# PÁGINA 2 — MONITOR MQTT (CORRIGIDO)
+# ============================================
+# ============================================
+# PÁGINA 2 — MONITOR MQTT (COM CORREÇÃO DE MEMÓRIA)
 # ============================================
 if pagina == "Monitor MQTT":
-    st.header("📡 Monitoramento MQTT – Data Center")
-
-    st.write(f"Broker: **{MQTT_BROKER}** — Porta: **{MQTT_PORT}**")
-
-    MQTT_TOPICS = [
-        "datacenter/fuzzy/temp"
-        "datacenter/fuzzy/control" # Ou criar um tópico específico para controle
-        "datacenter/fuzzy/alert"
-        "datacenter/fuzzy/carga"
+    st.header("📡 Monitoramento MQTT (TCP 1883)")
+    
+    # Configurações idênticas ao main.py
+    BROKER = "test.mosquitto.org"
+    PORT   = 1883
+    
+    TOPICS = [
+        ("datacenter/fuzzy/temp", 0),
+        ("datacenter/fuzzy/control", 0),
+        ("datacenter/fuzzy/alert", 0),
+        ("datacenter/fuzzy/carga", 0)
     ]
 
-    # ------------------------------
-    # Inicializa sessão (apenas uma vez)
-    # ------------------------------
+    # --- CORREÇÃO DO ERRO KEYERROR ---
+    # Verifica se a memória está "suja" com chaves antigas e recria
+    if "mqtt_data" in st.session_state:
+        # Se existir "mqtt_data" mas não tiver a chave nova "temp", apaga tudo!
+        if "temp" not in st.session_state["mqtt_data"]:
+            st.session_state.pop("mqtt_data") # Limpa a memória velha
+            st.rerun() # Recarrega a página
+
+    # Inicializa sessão limpa se não existir
     if "mqtt_data" not in st.session_state:
         st.session_state["mqtt_data"] = {
-            "temperatura": [],
-            "carga": [],
-            "crac": [],
-            "alertas": [],
+            "temp": [], 
+            "carga": [], 
+            "crac": [], 
+            "alertas": []
         }
 
-    if "mqtt_client" not in st.session_state:
-        # Vamos criar o cliente MQTT, com callbacks,
-        # mas NÃO vamos usar loop_start (sem thread separada)
+    # Inicializa Cliente MQTT
+    if "mqtt_client_monitor" not in st.session_state:
         client = mqtt.Client()
-
-        def on_connect(client, userdata, flags, rc):
+        
+        def on_connect(c, userdata, flags, rc):
             if rc == 0:
-                print("MQTT monitor conectado.")
-                for top in MQTT_TOPICS:
-                    client.subscribe(top)
+                st.toast("✅ Monitor Conectado!")
+                c.subscribe(TOPICS)
             else:
-                print("Falha ao conectar MQTT monitor. Código:", rc)
+                st.error(f"Erro conexão: {rc}")
 
-        def on_message(client, userdata, msg):
-            # Essa função roda no MESMO THREAD do Streamlit
-            # porque usamos client.loop() dentro do script.
+        def on_message(c, userdata, msg):
             try:
+                topic = msg.topic
                 payload = msg.payload.decode()
-                t = time.time()
+                t_now = time.time()
+                
+                # Debug no terminal do Python
+                print(f"📥 RECEBIDO: {topic} -> {payload}")
 
-                if msg.topic.endswith("temperatura"):
-                    st.session_state["mqtt_data"]["temperatura"].append((t, float(payload)))
-                elif msg.topic.endswith("carga_termica"):
-                    st.session_state["mqtt_data"]["carga"].append((t, float(payload)))
-                elif msg.topic.endswith("potencia_crac"):
-                    st.session_state["mqtt_data"]["crac"].append((t, float(payload)))
-                elif msg.topic.endswith("alertas"):
-                    st.session_state["mqtt_data"]["alertas"].append((t, payload))
+                if "temp" in topic:
+                    st.session_state["mqtt_data"]["temp"].append((t_now, float(payload)))
+                elif "control" in topic:
+                    st.session_state["mqtt_data"]["crac"].append((t_now, float(payload)))
+                elif "carga" in topic:
+                    st.session_state["mqtt_data"]["carga"].append((t_now, float(payload)))
+                elif "alert" in topic:
+                    st.session_state["mqtt_data"]["alertas"].append((t_now, payload))
             except Exception as e:
-                print("Erro ao processar mensagem MQTT:", e)
+                print(f"Erro processamento: {e}")
 
         client.on_connect = on_connect
         client.on_message = on_message
-
+        
         try:
-            client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            client.connect(BROKER, PORT, 60)
+            client.loop_start() 
+            st.session_state["mqtt_client_monitor"] = client
         except Exception as e:
-            st.error(f"Erro ao conectar MQTT monitor: {e}")
+            st.error(f"Erro fatal MQTT: {e}")
 
-        # guarda no session_state
-        st.session_state["mqtt_client"] = client
+    st.info(f"Conectado a: {BROKER}:{PORT}. Abra a simulação na outra aba.")
 
-    # Pega o cliente
-    client = st.session_state["mqtt_client"]
+    # Botão para atualizar a TELA
+    if st.button("🔄 Atualizar Visualização"):
+        pass 
 
-    # Botão para rodar o loop e puxar mensagens novas
-    if st.button("Atualizar dados MQTT"):
-        # Processa eventos de rede por 0.5 segundo
-        start = time.time()
-        while time.time() - start < 0.5:
-            client.loop(timeout=0.1)  # NÃO cria thread, roda no mesmo fluxo
+    # --- EXIBIÇÃO ---
+    d = st.session_state["mqtt_data"]
+    
+    # Verifica se as listas têm dados antes de tentar acessar
+    val_t = d["temp"][-1][1]  if d["temp"]  else 0.0
+    val_c = d["carga"][-1][1] if d["carga"] else 0.0
+    val_p = d["crac"][-1][1]  if d["crac"]  else 0.0
 
-    # --------------- MÉTRICAS RÁPIDAS ---------------
-    temp_val  = st.session_state["mqtt_data"]["temperatura"][-1][1] if st.session_state["mqtt_data"]["temperatura"] else None
-    carga_val = st.session_state["mqtt_data"]["carga"][-1][1]        if st.session_state["mqtt_data"]["carga"] else None
-    crac_val  = st.session_state["mqtt_data"]["crac"][-1][1]         if st.session_state["mqtt_data"]["crac"] else None
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Temperatura", f"{val_t:.2f} °C")
+    c2.metric("Carga Térmica", f"{val_c:.1f} %")
+    c3.metric("Potência CRAC", f"{val_p:.1f} %")
 
-    colA, colB, colC = st.columns(3)
-    colA.metric("Temperatura interna (°C)", f"{temp_val:.2f}" if temp_val is not None else "—")
-    colB.metric("Carga térmica (%)", f"{carga_val:.1f}" if carga_val is not None else "—")
-    colC.metric("Potência CRAC (%)", f"{crac_val:.1f}" if crac_val is not None else "—")
-
-    st.write("")
-
-    # --------------- HISTÓRICO EM GRÁFICO ---------------
-    if len(st.session_state["mqtt_data"]["temperatura"]) >= 2:
-        tempos_temp = [x[0] for x in st.session_state["mqtt_data"]["temperatura"]]
-        vals_temp   = [x[1] for x in st.session_state["mqtt_data"]["temperatura"]]
-
-        figT, axT = plt.subplots(figsize=(10, 3))
-        axT.plot(tempos_temp, vals_temp, label="Temperatura (°C)")
-        axT.set_xlabel("Tempo (epoch)")
-        axT.set_ylabel("°C")
-        axT.grid(True)
-        axT.legend()
-        st.pyplot(figT)
-
-    if len(st.session_state["mqtt_data"]["crac"]) >= 2:
-        tempos_crac = [x[0] for x in st.session_state["mqtt_data"]["crac"]]
-        vals_crac   = [x[1] for x in st.session_state["mqtt_data"]["crac"]]
-
-        figC, axC = plt.subplots(figsize=(10, 3))
-        axC.plot(tempos_crac, vals_crac, label="Potência CRAC (%)")
-        axC.set_xlabel("Tempo (epoch)")
-        axC.set_ylabel("%")
-        axC.grid(True)
-        axC.legend()
-        st.pyplot(figC)
-
-    # --------------- ALERTAS ---------------
-    st.subheader("Alertas recebidos:")
-    if st.session_state["mqtt_data"]["alertas"]:
-        for t_alert, msg in reversed(st.session_state["mqtt_data"]["alertas"][-10:]):
-            st.error(f"{time.ctime(t_alert)} — {msg}")
+    # Gráfico
+    if len(d["temp"]) > 1:
+        y_vals = [x[1] for x in d["temp"][-50:]] # Últimos 50 pontos
+        st.line_chart(y_vals)
     else:
-        st.info("Nenhum alerta recebido ainda.")
-
-    st.write("---")
-    st.write("Monitorando tópicos: `datacenter/temperatura`, `datacenter/carga_termica`, `datacenter/potencia_crac`, `datacenter/alertas`.")
+        st.write("Aguardando dados para gerar gráfico...")
+    
+    # Alertas
+    if d["alertas"]:
+        st.warning(f"Último alerta: {d['alertas'][-1][1]}")
