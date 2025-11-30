@@ -1,208 +1,248 @@
-# gui_tk.py – Tkinter + Ubidots MQTT + Fuzzy + Gráficos (VERSÃO FINAL)
 import tkinter as tk
 from tkinter import ttk, messagebox
-import json
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import paho.mqtt.client as mqtt
 import threading
 import time
-import paho.mqtt.client as mqtt
-import matplotlib.pyplot as plt
+import json
+import subprocess
+import sys
+import os
 
 from main import (
     fuzzy_controller,
-    criar_graficos_mf,
-    simular_24h
+    modelo_fisico,
+    criar_graficos_mf,  # Importando a função restaurada
+    get_temp_externa,
+    get_carga_termica
 )
 
 # ==========================================
-# CONFIG MQTT UBIDOTS
+# CONFIGURAÇÃO MQTT (REMETENTE)
 # ==========================================
+MQTT_BROKER = "broker.hivemq.com"
+client_mqtt = mqtt.Client()
 
-UBIDOTS_TOKEN = "BBUS-WwyOU1nsEDFECqPV8bM27l8MLeaLa6"
-UBIDOTS_BROKER = "industrial.api.ubidots.com"
-UBIDOTS_PORT = 1883
-
-# Cada variável tem SEU PRÓPRIO tópico (correto para atualização)
-TOPIC_ERRO = "/v1.6/devices/datacenter/erro"
-TOPIC_CARGA = "/v1.6/devices/datacenter/carga"
-TOPIC_CRAC = "/v1.6/devices/datacenter/crac"
-
-
-def publicar_ubidots(erro, carga, crac):
-    """Envia valores para o Ubidots SEM criar novas variáveis."""
+def conectar_mqtt():
     try:
-        client = mqtt.Client()
-        client.username_pw_set(UBIDOTS_TOKEN, "")
-        client.connect(UBIDOTS_BROKER, UBIDOTS_PORT, 60)
+        client_mqtt.connect(MQTT_BROKER, 1883, 60)
+        client_mqtt.loop_start()
+        lbl_status_mqtt.config(text="MQTT: ONLINE (Enviando)", foreground="green")
+    except:
+        lbl_status_mqtt.config(text="MQTT: OFFLINE", foreground="red")
 
-        # timestamp obrigatório para registrar SEMPRE
-        ts = int(time.time() * 1000)
-
-        # Atualiza erro
-        client.publish(
-            TOPIC_ERRO,
-            json.dumps({"value": float(erro), "timestamp": ts})
-        )
-
-        # Atualiza carga
-        client.publish(
-            TOPIC_CARGA,
-            json.dumps({"value": float(carga), "timestamp": ts})
-        )
-
-        # Atualiza CRAC
-        client.publish(
-            TOPIC_CRAC,
-            json.dumps({"value": float(crac), "timestamp": ts})
-        )
-
-        client.disconnect()
-
-        print("[UBIDOTS] ENVIADO:",
-              {"erro": erro, "carga": carga, "crac": crac})
-
-    except Exception as e:
-        print("[UBIDOTS] ERRO:", e)
-
+def publicar_mqtt(t, temp, crac, carga, erro):
+    if not client_mqtt.is_connected(): return
+    
+    # Tópicos conforme PDF
+    base = "datacenter/fuzzy"
+    client_mqtt.publish(f"{base}/temp", round(temp, 2))
+    
+    payload = json.dumps({"minuto": t, "pcrac": round(crac,2), "carga": round(carga,2), "erro": round(erro,2)})
+    client_mqtt.publish(f"{base}/control", payload)
+    
+    if temp < 18 or temp > 26:
+        client_mqtt.publish(f"{base}/alert", json.dumps({"msg": "TEMP CRITICA", "val": temp}))
 
 # ==========================================
-# CONTROLE FUZZY
+# FUNÇÕES DE INTERFACE (MANUAL)
 # ==========================================
+manual_prev = 50.0
 
-PCRAC_prev = 50.0
-PCRAC_ultimo = 50.0
-
-
-def calcular_fuzzy():
-    """Calcula fuzzy e envia SEMPRE ao Ubidots."""
-    global PCRAC_prev, PCRAC_ultimo
-
+def calcular_manual():
+    global manual_prev
     try:
-        erro = erro_slider.get()
-        de = de_slider.get()
-        text = text_slider.get()
-        qest = qest_slider.get()
-
-        # Cálculo fuzzy
-        PCRAC = fuzzy_controller(erro, de, text, qest, PCRAC_prev)
-
-        PCRAC_prev = PCRAC
-        PCRAC_ultimo = PCRAC
-
-        # Atualiza visual
-        resultado_var.set(f"{PCRAC:.2f}%")
-
-        # Envia para Ubidots (SEM criar duplicatas)
-        publicar_ubidots(erro, qest, PCRAC)
-
+        e = sld_erro.get()
+        de = sld_de.get()
+        ext = sld_text.get()
+        c = sld_qest.get()
+        
+        res = fuzzy_controller(e, de, ext, c, manual_prev)
+        manual_prev = res
+        var_res_manual.set(f"{res:.2f}%")
+        
     except Exception as e:
-        print("❌ Erro Fuzzy:", e)
+        messagebox.showerror("Erro", str(e))
 
-
-def mostrar_mf():
-    """Mostra funções de pertinência."""
+def mostrar_graficos_mf():
     try:
-        fig = criar_graficos_mf(
-            erro_slider.get(),
-            de_slider.get(),
-            text_slider.get(),
-            qest_slider.get(),
-            PCRAC_ultimo
+        e = sld_erro.get()
+        de = sld_de.get()
+        ext = sld_text.get()
+        c = sld_qest.get()
+        # Usa o valor calculado atual ou o anterior
+        pcrac = manual_prev
+        
+        fig = criar_graficos_mf(e, de, ext, c, pcrac)
+        plt.show() # Abre em janela separada do Matplotlib para melhor visualização
+    except Exception as x:
+        messagebox.showerror("Erro", str(x))
+
+def abrir_monitor_externo():
+    script = "monitoramento_viewer.py"
+    if not os.path.exists(script):
+        messagebox.showerror("Erro", f"Arquivo {script} não encontrado!")
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.Popen([sys.executable, script], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            subprocess.Popen(["x-terminal-emulator", "-e", sys.executable, script])
+    except Exception as e:
+        messagebox.showerror("Erro", str(e))
+
+# ==========================================
+# FUNÇÕES DE SIMULAÇÃO (THREAD)
+# ==========================================
+simulando = False
+dados_x, dados_y1, dados_y2 = [], [], []
+
+def thread_simulacao():
+    global simulando
+    simulando = True
+    btn_sim_start.config(state="disabled")
+    
+    dados_x.clear(); dados_y1.clear(); dados_y2.clear()
+    ax1.clear(); ax2.clear()
+    
+    T = 22.0
+    Prev = 50.0
+    e_ant = 0
+    
+    for t in range(1440):
+        if not simulando: break
+        
+        ext = get_temp_externa(t)
+        qest = get_carga_termica(t)
+        erro = T - 22.0
+        de = erro - e_ant
+        
+        PCRAC = fuzzy_controller(
+            max(-16, min(16, erro)), max(-2, min(2, de)),
+            max(10, min(35, ext)), max(0, min(100, qest)), Prev
         )
-        plt.show()
-    except Exception as e:
-        messagebox.showerror("Erro MF", str(e))
+        
+        T_next = modelo_fisico(T, PCRAC, qest, ext)
+        
+        # Envia MQTT
+        publicar_mqtt(t, T, PCRAC, qest, erro)
+        
+        # Atualiza GUI
+        dados_x.append(t/60)
+        dados_y1.append(T)
+        dados_y2.append(PCRAC)
+        
+        if t % 15 == 0: # Atualiza visual a cada 15 min simulados
+            root.after(0, atualizar_grafico_sim, T, PCRAC)
+            time.sleep(0.02)
+            
+        T = T_next
+        e_ant = erro
+        Prev = PCRAC
+        
+    simulando = False
+    root.after(0, lambda: btn_sim_start.config(state="normal"))
 
+def parar_simulacao():
+    global simulando
+    simulando = False
+
+def atualizar_grafico_sim(temp, crac):
+    ax1.clear(); ax2.clear()
+    
+    ax1.plot(dados_x, dados_y1, 'r-', label="Temp")
+    ax1.axhline(22, color='g', linestyle='--', alpha=0.5)
+    ax1.axhline(26, color='orange', linestyle=':')
+    ax1.axhline(18, color='orange', linestyle=':')
+    ax1.set_ylabel("Temp (°C)", color='r')
+    ax1.set_ylim(16, 28)
+    
+    ax2_twin = ax1.twinx()
+    ax2_twin.plot(dados_x, dados_y2, 'b-', label="CRAC", alpha=0.3)
+    ax2_twin.set_ylim(0, 100)
+    ax2_twin.set_ylabel("CRAC (%)", color='b')
+    
+    ax1.set_title(f"Simulação 24h (T: {temp:.1f}°C)")
+    canvas.draw()
 
 # ==========================================
-# SIMULAÇÃO 24H (THREAD)
+# INTERFACE GRÁFICA PRINCIPAL
 # ==========================================
-
-def _thread_simulacao():
-    """Roda simulação sem travar interface."""
-    try:
-        ts, Ts, Texts, Qests, PCRACs = simular_24h()
-
-        def mostrar():
-            fig1, ax1 = plt.subplots(figsize=(10, 4))
-            ax1.plot(ts, Ts, label="Temperatura Interna")
-            ax1.plot(ts, Texts, label="Temperatura Externa")
-            ax1.grid(True)
-            ax1.legend()
-
-            fig2, ax2 = plt.subplots(figsize=(10, 4))
-            ax2.plot(ts, Qests, label="Carga Térmica")
-            ax2.plot(ts, PCRACs, label="PCRAC")
-            ax2.grid(True)
-            ax2.legend()
-
-            plt.show()
-
-        root.after(0, mostrar)
-
-    except Exception as e:
-        messagebox.showerror("Erro Simulação", str(e))
-
-
-def simular_async():
-    threading.Thread(target=_thread_simulacao, daemon=True).start()
-
-
-# ==========================================
-# INTERFACE TKINTER
-# ==========================================
-
 root = tk.Tk()
-root.title("Controle Fuzzy – Ubidots + Tkinter (Versão Final)")
-root.geometry("780x420")
+root.title("Sistema Fuzzy Data Center (Completo)")
+root.geometry("950x650")
 
-titulo = ttk.Label(
-    root,
-    text="Sistema Fuzzy – Data Center\nTkinter + MQTT Ubidots",
-    font=("Segoe UI", 14, "bold")
-)
-titulo.pack(pady=10)
+# Conecta MQTT no início
+threading.Thread(target=conectar_mqtt, daemon=True).start()
+
+# --- SISTEMA DE ABAS ---
+notebook = ttk.Notebook(root)
+notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+# ==========================================
+# ABA 1: CONTROLE MANUAL & GRÁFICOS MF
+# ==========================================
+tab_manual = ttk.Frame(notebook)
+notebook.add(tab_manual, text="🎛️ Manual & MFs")
+
+frm_inputs = ttk.LabelFrame(tab_manual, text="Entradas do Controlador")
+frm_inputs.pack(padx=20, pady=20, fill="x")
+
+# Sliders (Inputs)
+sld_erro = tk.Scale(frm_inputs, from_=-16, to=16, orient="horizontal", label="Erro (e)", length=400, resolution=0.1)
+sld_erro.pack(pady=5)
+
+sld_de = tk.Scale(frm_inputs, from_=-2, to=2, orient="horizontal", label="Delta Erro (de)", length=400, resolution=0.1)
+sld_de.pack(pady=5)
+
+sld_text = tk.Scale(frm_inputs, from_=10, to=35, orient="horizontal", label="Temp. Externa", length=400, resolution=0.5)
+sld_text.pack(pady=5)
+
+sld_qest = tk.Scale(frm_inputs, from_=0, to=100, orient="horizontal", label="Carga Térmica %", length=400, resolution=1)
+sld_qest.pack(pady=5)
+
+# Botões e Resultado
+frm_actions = ttk.Frame(tab_manual)
+frm_actions.pack(pady=10)
+
+ttk.Button(frm_actions, text="CALCULAR SAÍDA", command=calcular_manual).pack(side="left", padx=10)
+ttk.Button(frm_actions, text="📈 VER GRÁFICOS DE PERTINÊNCIA", command=mostrar_graficos_mf).pack(side="left", padx=10)
+
+var_res_manual = tk.StringVar(value="-- %")
+ttk.Label(tab_manual, text="Saída PCRAC:", font=("Arial", 12)).pack(pady=5)
+ttk.Label(tab_manual, textvariable=var_res_manual, font=("Arial", 20, "bold"), foreground="blue").pack()
 
 
-frame = ttk.LabelFrame(root, text="Entradas do Controlador Fuzzy")
-frame.pack(pady=10, fill="x")
+# ==========================================
+# ABA 2: SIMULAÇÃO 24H & MQTT
+# ==========================================
+tab_sim = ttk.Frame(notebook)
+notebook.add(tab_sim, text="📊 Simulação & MQTT")
 
-erro_slider = tk.Scale(frame, from_=-16, to=16, orient="horizontal",
-                       length=180, resolution=0.1, label="Erro")
-erro_slider.grid(row=0, column=0, padx=10)
+# Header Status
+frm_head = ttk.Frame(tab_sim)
+frm_head.pack(fill="x", padx=10, pady=5)
+lbl_status_mqtt = ttk.Label(frm_head, text="MQTT: ...", font=("Arial", 10, "bold"))
+lbl_status_mqtt.pack(side="right")
 
-de_slider = tk.Scale(frame, from_=-2, to=2, orient="horizontal",
-                     length=180, resolution=0.1, label="Delta Erro")
-de_slider.grid(row=0, column=1, padx=10)
+# Botões de Simulação
+frm_ctrl_sim = ttk.LabelFrame(tab_sim, text="Controle")
+frm_ctrl_sim.pack(fill="x", padx=10, pady=5)
 
-text_slider = tk.Scale(frame, from_=10, to=35, orient="horizontal",
-                       length=180, resolution=0.5, label="Temp Externa")
-text_slider.grid(row=0, column=2, padx=10)
+btn_sim_start = ttk.Button(frm_ctrl_sim, text="▶ INICIAR SIMULAÇÃO 24H", command=lambda: threading.Thread(target=thread_simulacao, daemon=True).start())
+btn_sim_start.pack(side="left", padx=10, pady=10)
 
-qest_slider = tk.Scale(frame, from_=0, to=100, orient="horizontal",
-                       length=180, resolution=1, label="Carga Térmica")
-qest_slider.grid(row=0, column=3, padx=10)
+ttk.Button(frm_ctrl_sim, text="⏹ PARAR", command=parar_simulacao).pack(side="left", padx=10)
 
+ttk.Separator(frm_ctrl_sim, orient="vertical").pack(side="left", fill="y", padx=10, pady=5)
 
-# Resultado PCRAC
-resultado_var = tk.StringVar(value="--%")
+ttk.Button(frm_ctrl_sim, text="📡 ABRIR MONITOR EXTERNO", command=abrir_monitor_externo).pack(side="left", padx=10)
 
-ttk.Label(root, text="Saída Fuzzy (PCRAC):", font=("Segoe UI", 11)).pack()
-ttk.Label(root, textvariable=resultado_var,
-          font=("Segoe UI", 14, "bold"), foreground="blue").pack()
-
-
-# Botões
-botoes = ttk.Frame(root)
-botoes.pack(pady=10)
-
-ttk.Button(botoes, text="Calcular Fuzzy + Enviar Ubidots",
-           command=calcular_fuzzy).grid(row=0, column=0, padx=10)
-
-ttk.Button(botoes, text="Ver Funções de Pertinência",
-           command=mostrar_mf).grid(row=0, column=1, padx=10)
-
-ttk.Button(botoes, text="Simular 24h",
-           command=simular_async).grid(row=0, column=2, padx=10)
-
+# Gráfico
+fig, ax1 = plt.subplots(figsize=(8, 4), dpi=100)
+ax2 = ax1.twinx()
+canvas = FigureCanvasTkAgg(fig, master=tab_sim)
+canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
 root.mainloop()
