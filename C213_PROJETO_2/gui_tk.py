@@ -219,7 +219,23 @@ dados_ext = []
 def thread_simulacao():
     global simulando
     simulando = True
+    
+    # Trava os controles durante a simulação
     btn_sim_start.config(state="disabled")
+    cmb_setpoint.config(state="disabled")
+    scale_e_init.config(state="disabled") 
+
+    # 1. Pega o Setpoint
+    try:
+        sp = float(cmb_setpoint.get())
+    except:
+        sp = 22.0
+
+    # 2. Pega o ERRO Inicial
+    try:
+        erro_inicial = float(scale_e_init.get())
+    except:
+        erro_inicial = 0.0
 
     dados_x.clear()
     dados_y1.clear()
@@ -229,7 +245,10 @@ def thread_simulacao():
     ax1.clear()
     ax2.clear()
 
-    T = 22.0
+    # --- DEFINIÇÃO DA TEMPERATURA INICIAL ---
+    # Se Erro = T - Setpoint, então T = Setpoint + Erro
+    T = sp + erro_inicial
+    
     Prev = 50.0
     e_ant = 0
 
@@ -240,11 +259,13 @@ def thread_simulacao():
         ext = get_temp_externa(t)
         qest = get_carga_termica(t)
 
-        erro = T - 22
+        # CÁLCULO DO ERRO
+        erro = T - sp
         dE = erro - e_ant
 
+        # Controlador Fuzzy
         PCRAC = fuzzy_controller(
-            max(-16, min(16, erro)),
+            max(-10, min(10, erro)),
             max(-2, min(2, dE)),
             max(10, min(35, ext)),
             max(0, min(100, qest)),
@@ -261,7 +282,7 @@ def thread_simulacao():
         dados_ext.append(ext)
 
         if t % 15 == 0:
-            root.after(0, atualizar_grafico_sim, T, PCRAC, ext)
+            root.after(0, atualizar_grafico_sim, T, PCRAC, ext, sp)
             time.sleep(0.02)
 
         Prev = PCRAC
@@ -269,7 +290,10 @@ def thread_simulacao():
         T = T_next
 
     simulando = False
+    # Destrava os controles
     root.after(0, lambda: btn_sim_start.config(state="normal"))
+    root.after(0, lambda: cmb_setpoint.config(state="readonly"))
+    root.after(0, lambda: scale_e_init.config(state="normal"))
 
 
 def parar_simulacao():
@@ -277,16 +301,19 @@ def parar_simulacao():
     simulando = False
 
 
-def atualizar_grafico_sim(temp, crac, ext):
+def atualizar_grafico_sim(temp, crac, ext, sp):
     ax1.clear()
     ax2.clear()
 
     # Temperaturas
     ax1.plot(dados_x, dados_y1, 'r-', label="Temp Interna")
     ax1.plot(dados_x, dados_ext, 'g-', label="Temp Externa")
+    
+    # Linha do Setpoint
+    ax1.axhline(sp, color='black', linestyle='--', alpha=0.5, label=f"Setpoint ({sp}°C)")
 
     ax1.set_ylabel("Temperatura (°C)")
-    ax1.set_ylim(16, 32)
+    ax1.set_ylim(10, 40)
     ax1.legend(loc="upper left")
 
     # CRAC
@@ -295,7 +322,7 @@ def atualizar_grafico_sim(temp, crac, ext):
     ax2.set_ylim(0, 100)
 
     ax1.set_title(
-        f"Simulação 24h (T interna: {temp:.1f}°C | T externa: {ext:.1f}°C)"
+        f"Simulação 24h (Target: {sp}°C | Erro Atual: {temp-sp:.1f})"
     )
 
     canvas.draw()
@@ -320,7 +347,7 @@ notebook.add(tab_manual, text="🎛️ Manual & MFs")
 frm_inputs = ttk.LabelFrame(tab_manual, text="Entradas do Controlador")
 frm_inputs.pack(fill="x", padx=10, pady=10)
 
-sld_erro = tk.Scale(frm_inputs, from_=-16, to=16, orient="horizontal",
+sld_erro = tk.Scale(frm_inputs, from_=-10, to=10, orient="horizontal",
                     label="Erro (e)", length=400, resolution=0.1)
 sld_erro.pack(pady=5)
 
@@ -375,8 +402,22 @@ lbl_status_mqtt.pack(side="right")
 frm_ctrl = ttk.LabelFrame(tab_sim, text="Controle")
 frm_ctrl.pack(fill="x", padx=10, pady=5)
 
+# --- SETPOINT ---
+ttk.Label(frm_ctrl, text="Setpoint (°C):", font=("Arial", 10, "bold")).pack(side="left", padx=5)
+cmb_setpoint = ttk.Combobox(frm_ctrl, values=["16", "22", "26", "32"], width=5, state="readonly")
+cmb_setpoint.current(1) # Padrão 22
+cmb_setpoint.pack(side="left", padx=5)
+
+# --- ERRO INICIAL ---
+ttk.Label(frm_ctrl, text="Erro Inicial:", font=("Arial", 10, "bold")).pack(side="left", padx=5)
+scale_e_init = tk.Scale(frm_ctrl, from_=-10, to=10, orient="horizontal", length=150, resolution=0.5)
+scale_e_init.set(0) # Começa estabilizado (Erro 0)
+scale_e_init.pack(side="left", padx=5)
+
+ttk.Separator(frm_ctrl, orient="vertical").pack(side="left", fill="y", padx=10)
+
 btn_sim_start = ttk.Button(frm_ctrl,
-                           text="▶ INICIAR SIMULAÇÃO 24H",
+                           text="▶ INICIAR",
                            command=lambda: threading.Thread(
                                target=thread_simulacao, daemon=True).start())
 btn_sim_start.pack(side="left", padx=10, pady=10)
@@ -388,7 +429,7 @@ ttk.Separator(frm_ctrl, orient="vertical").pack(side="left",
                                                 fill="y",
                                                 padx=10)
 
-ttk.Button(frm_ctrl, text="📡 ABRIR MONITOR EXTERNO",
+ttk.Button(frm_ctrl, text="📡 MONITOR",
            command=abrir_monitor_externo).pack(side="left", padx=10)
 
 # Gráfico
