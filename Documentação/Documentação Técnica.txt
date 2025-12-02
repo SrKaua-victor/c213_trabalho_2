@@ -1,0 +1,49 @@
+1.1 Justificativa do Design de Funções de Pertinência
+Para este projeto, optou-se pelo uso predominante de Funções de Pertinência Triangulares ('trimf'). Esta escolha baseia-se em três pilares principais:
+1. Eficiência Computacional: As funções triangulares consomem menos processamento do que funções gaussianas ou sigmoidais, o que é ideal para sistemas de controle em tempo real.
+2. Linearidade: Elas oferecem uma transição linear entre os estados, facilitando a interpretação do comportamento do controlador.
+3. Adequação ao Problema: Para controle térmico, as transições de estados (ex: de "temperatura média" para "alta") são graduais, o que é bem representado pela inclinação das retas.
+
+Os universos de discurso foram definidos conforme as restrições físicas do Data Center:
+- Erro (e): Faixa de [-10, 10] °C, com foco na resolução próxima a zero (estado estacionário).
+- Temperatura Externa (Text): Faixa de [10, 35] °C, cobrindo as variações climáticas típicas simuladas.
+- Saída (PCRAC): Faixa de [0, 100] %, permitindo controle proporcional da potência do compressor.
+
+1.2 Explicação da Base de Regras Desenvolvida
+A base de regras, implementada via inferência de Mamdani, possui 12 regras que cobrem o espaço de estados do sistema. A lógica foi construída para priorizar a segurança do equipamento e a eficiência energética:
+
+- Regras Proporcionais-Derivativas (PD): As primeiras 9 regras cruzam o Erro com a Variação do Erro (Delta e).
+  Exemplo: Se o Erro é POSITIVO (quente) e a Variação é POSITIVA (esquentando mais), a ação é POTÊNCIA ALTA para conter a subida rápida.
+
+- Regras de Feedforward (Antecipatórias): Foram incluídas regras que observam as perturbações externas antes que elas afetem a temperatura interna.
+  Regra 10: Se Text é ALTA -> Aumenta PCRAC.
+  Regra 12: Se Carga Térmica (Qest) é ALTA -> Aumenta PCRAC.
+
+Isso permite que o sistema reaja preventivamente, evitando overshoots (picos de temperatura) excessivos.
+
+1.3 Análise da Estratégia de Controle Implementada
+O sistema utiliza uma arquitetura MISO (Multiple Input, Single Output). Diferente de um PID clássico que reage apenas ao erro passado, este controlador Fuzzy atua como um sistema híbrido:
+1. Ação Corretiva: Baseada no erro atual e na tendência do erro, garantindo estabilidade.
+2. Ação Preditiva: Utiliza os sensores de Carga Térmica e Temperatura Externa como variáveis de distúrbio mensuráveis.
+
+A defuzzificação é feita pelo método do Centróide, que garante uma saída suave e contínua, evitando trancos no compressor do ar-condicionado.
+
+-------------------------------------------------------------------------
+
+2. Análise de Resultados
+
+2.1 Testes de Validação do Sistema
+O sistema foi validado através de uma simulação contínua de 24 horas (1440 iterações/minutos). Os testes demonstraram que o controlador consegue manter a temperatura na faixa ideal (22°C +/- 2°C) na maior parte do tempo, respondendo adequadamente às variações diárias.
+
+2.2 Análise de Resposta ante Diferentes Cenários
+Observou-se o comportamento do sistema em dois cenários críticos simulados:
+1. Pico de Carga (Middle-day): Quando a carga térmica e a temperatura externa sobem simultaneamente (simulado próximo ao meio-dia), o controlador elevou a potência do CRAC preventivamente, minimizando o desvio de temperatura.
+2. Madrugada (Baixa Carga): Com temperatura externa baixa, o sistema reduziu a potência do CRAC para economizar energia, mantendo a temperatura no Setpoint sem resfriar excessivamente o ambiente.
+
+2.3 Comparação com Controladores Tradicionais
+Em comparação teórica com um controlador On/Off (Bang-Bang), o sistema Fuzzy apresentou vantagens claras:
+- Menor Oscilação: O sistema On/Off causaria "dentes de serra" na temperatura. O Fuzzy manteve uma curva suave.
+- Eficiência Energética: Ao ajustar a potência para valores intermediários (ex: 45%), evita-se o pico de corrente de partida constante dos motores, aumentando a vida útil do equipamento.
+
+2.4 Avaliação de Robustez e Estabilidade
+A robustez foi testada pela introdução de ruído gaussiano (random.gauss) nas leituras de temperatura externa e carga térmica no código de simulação. Mesmo com a incerteza e ruídos nas entradas, o motor de inferência Fuzzy filtrou as variações bruscas. O uso do termo derivativo (Delta Erro) foi crucial para amortecer a resposta e impedir instabilidade em momentos de mudança rápida.
